@@ -2,6 +2,9 @@ import boto3
 import botocore
 import click
 
+session = boto3.Session(profile_name='shotty')
+ec2 = session.resource('ec2')
+
 def filter_instances(project):
     if project:
         filters = [{'Name':'tag:Project', 'Values':[project]}]
@@ -11,8 +14,9 @@ def filter_instances(project):
 
     return instances
 
-session = boto3.Session(profile_name='shotty')
-ec2 = session.resource('ec2')
+def has_pending_snapshot(volums):
+    snapshots = list(volume.snapshots.all())
+    return snapshots and snapshots[0].state == 'pending'
 
 @click.group()
 def cli():
@@ -25,8 +29,10 @@ def snapshots():
 @snapshots.command('list')
 @click.option('--project', default = None,
     help = "Only snapshots for project (tag Project:<name>)")
-def list_snapshots(project):
-    "List EC2 volumes"
+@click.option('--all', 'list_all', default=False, is_flag=True,
+help="List all snapshots for each volume, not just the most recent")
+def list_snapshots(project, list_all):
+    "List EC2 snapshots"
 
     instances = filter_instances(project)
 
@@ -41,6 +47,8 @@ def list_snapshots(project):
                     s.progress,
                     s.start_time.strftime("%c")
                 )))
+
+                if s.state == 'completed' and not list_all: break
 
     return
 
@@ -87,6 +95,10 @@ def create_snapshots(project):
         i.stop()
         i.wait_until_stopped()
         for v in i.volumes.all():
+            if has_pending_snapshot(v):
+                print(" Skipping {0}, snapshot already in-progress".format(v.id))
+                continue
+
             print(" Creating snapshot of {0}".format(v.id))
             v.create_snapshot(Description="Created by shotty")
         print("Starting ...{0}".format(i.id))
@@ -129,8 +141,7 @@ def stop_instances(project):
         print("Stopping {0} ...".format(i.id))
         try:
             i.stop()
-        except:
-            botocore.exceptions.ClientError as e:
+        except botocore.exceptions.ClientError as e:
             print(" Could not stop {0}. ".format(i.id) + str(e))
             continue
 
@@ -148,8 +159,7 @@ def start_instances(project):
         print("Starting {0} ...".format(i.id))
         try:
             i.start()
-        except:
-            botocore.exceptions.ClientError as e:
+        except botocore.exceptions.ClientError as e:
             print(" Could not start {0}. ".format(i.id) + str(e))
             continue
 
